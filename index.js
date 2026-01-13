@@ -1,249 +1,246 @@
-const {
-    Client,
-    GatewayIntentBits,
-    SlashCommandBuilder,
-    EmbedBuilder,
-    REST,
-    Routes
-} = require('discord.js');
+require('dotenv').config();
 const fs = require('fs');
+const { DateTime } = require('luxon');
+const {
+  Client,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  REST,
+  Routes,
+  EmbedBuilder
+} = require('discord.js');
 
-// ===== CONFIG =====
-const TOKEN = 'MTQ1MjAzNzc4NjczMDIzMzg1Ng.Gav0RK.h1GJgF-Z8jn8S7enFWbYCILtLbSngp-Wa41Zs0';
-const CLIENT_ID = '1452037786730233856';
-const GUILD_ID = '1452797019834810512';
-const SHIFTS_CHANNEL_ID = '1452800610272542791';
-
-const STAFF_ROLE_ID = '1457118988558663781';
+// ================= CONFIG =================
+const TOKEN = process.env.TOKEN; // ⬅️ VERPLICHT OP RENDER
+const CLIENT_ID = '1459912910217281680';
+const GUILD_ID = '1373772001868513301';
+const SHIFTS_CHANNEL_ID = '1411140770781597898';
+const STAFF_ROLE_ID = '1459851940635869194';
 const PING_ROLE_ID = '1453005359995289762';
-const PING_DELETE_TIME = 1 * 60 * 1000; // 1 minute
+const TIMEZONE = 'Europe/Amsterdam';
+// ==========================================
 
-// ===== DATA =====
-const DATA_FILE = './data.json';
-let data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-
-function saveData() {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-// ===== CLIENT =====
+// ===== CLIENT
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds]
 });
 
-// ===== SLASH COMMANDS =====
+// ===== DATA
+const DATA_FILE = './data.json';
+
+function loadData() {
+  if (!fs.existsSync(DATA_FILE)) {
+    return { boardMessageId: null, shifts: [] };
+  }
+  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+}
+
+function saveData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+let data = loadData();
+
+// ===== PERMISSIONS
+function isStaff(interaction) {
+  return interaction.member.roles.cache.has(STAFF_ROLE_ID);
+}
+
+// ===== AUTO REMOVE SHIFT AFTER 30 MIN
+function scheduleRemoval(title) {
+  setTimeout(async () => {
+    data.shifts = data.shifts.filter(s => s.title !== title);
+    saveData(data);
+    await updateBoard();
+  }, 30 * 60 * 1000);
+}
+
+// ===== SLASH COMMANDS
 const commands = [
-    new SlashCommandBuilder()
-        .setName('shift')
-        .setDescription('Shift system')
-        .addSubcommand(sc =>
-            sc.setName('create')
-                .setDescription('Create a shift')
-                .addStringOption(o =>
-                    o.setName('title')
-                        .setDescription('Shift title')
-                        .setRequired(true)
-                )
-                .addStringOption(o =>
-                    o.setName('time')
-                        .setDescription('Time (YYYY-MM-DD HH:MM)')
-                        .setRequired(true)
-                )
+  new SlashCommandBuilder()
+    .setName('shift')
+    .setDescription('Shift system')
+    .addSubcommand(sc =>
+      sc.setName('setup')
+        .setDescription('Create the shift board')
+    )
+    .addSubcommand(sc =>
+      sc.setName('create')
+        .setDescription('Create a shift')
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Shift title')
+            .setRequired(true)
         )
-        .addSubcommand(sc =>
-            sc.setName('end')
-                .setDescription('End a shift')
-                .addStringOption(o =>
-                    o.setName('title')
-                        .setDescription('Shift title')
-                        .setRequired(true)
-                )
+        .addStringOption(o =>
+          o.setName('time')
+            .setDescription('HH:mm (Amsterdam)')
+            .setRequired(true)
         )
-        .addSubcommand(sc =>
-            sc.setName('cancel')
-                .setDescription('Cancel a shift')
-                .addStringOption(o =>
-                    o.setName('title')
-                        .setDescription('Shift title')
-                        .setRequired(true)
-                )
+    )
+    .addSubcommand(sc =>
+      sc.setName('end')
+        .setDescription('End a shift')
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Shift title')
+            .setRequired(true)
         )
-        .addSubcommand(sc =>
-            sc.setName('clear')
-                .setDescription('Delete ALL shifts')
+    )
+    .addSubcommand(sc =>
+      sc.setName('cancel')
+        .setDescription('Cancel a shift')
+        .addStringOption(o =>
+          o.setName('title')
+            .setDescription('Shift title')
+            .setRequired(true)
         )
+    )
+    .addSubcommand(sc =>
+      sc.setName('clear')
+        .setDescription('Clear all shifts immediately')
+    )
 ].map(c => c.toJSON());
 
+// ===== REGISTER COMMANDS
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-    await rest.put(
-        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-        { body: commands }
-    );
-    console.log('✅ Slash commands registered');
+  await rest.put(
+    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+    { body: commands }
+  );
+  console.log('✅ Slash commands registered');
 })();
 
-// ===== HELPERS =====
-function parseToTimestamp(input) {
-    const [date, time] = input.split(' ');
-    if (!date || !time) return null;
-
-    const [year, month, day] = date.split('-').map(Number);
-    const [hour, minute] = time.split(':').map(Number);
-
-    const d = new Date(year, month - 1, day, hour, minute);
-    if (isNaN(d.getTime())) return null;
-
-    return Math.floor(d.getTime() / 1000);
-}
-
-// ===== BOARD =====
+// ===== UPDATE BOARD
 async function updateBoard() {
+  if (!data.boardMessageId) return;
+
+  try {
     const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
-
-    const description =
-        data.shifts.length === 0
-            ? '*No active shifts*'
-            : data.shifts.map((s, i) => {
-                const statusText =
-                    s.status === 'Canceled'
-                        ? '❌ **Canceled**'
-                        : '🟢 **Planned**';
-
-                return (
-                    `**${i + 1}. ${s.title}**\n` +
-                    `🕒 <t:${s.timestamp}:F> (<t:${s.timestamp}:R>)\n` +
-                    `📌 Status: ${statusText}`
-                );
-            }).join('\n\n');
+    const message = await channel.messages.fetch(data.boardMessageId);
 
     const embed = new EmbedBuilder()
-        .setTitle('📋 Shift Board')
-        .setColor(0x2b2d31)
-        .setDescription(description);
+      .setTitle('📋 Shift Board')
+      .setColor(0x2b2d31)
+      .setDescription(
+        data.shifts.length === 0
+          ? '*No active shifts*'
+          : data.shifts.map((s, i) => {
+            const status =
+              s.status === 'Cancelled' ? '❌ Cancelled' :
+              s.status === 'Completed' ? '✅ Completed' :
+              '🟢 Planned';
 
-    try {
-        if (data.boardMessageId) {
-            const msg = await channel.messages.fetch(data.boardMessageId);
-            return msg.edit({ embeds: [embed] });
-        }
-    } catch {
-        console.log('⚠️ Board message missing, creating new one...');
-    }
+            return `**${i + 1}. ${s.title}**
+🕒 ${s.time}
+👤 <@${s.hostId}>
+📌 **${status}**`;
+          }).join('\n\n')
+      );
 
-    const newMsg = await channel.send({ embeds: [embed] });
-    data.boardMessageId = newMsg.id;
-    saveData();
+    await message.edit({ embeds: [embed] });
+  } catch {
+    data.boardMessageId = null;
+    saveData(data);
+  }
 }
 
-// ===== READY =====
-client.once('ready', async () => {
-    console.log(`🟢 Bot online as ${client.user.tag}`);
-    await updateBoard();
+// ===== READY
+client.once('ready', () => {
+  console.log(`🟢 Bot online als ${client.user.tag}`);
 });
 
-// ===== INTERACTIONS =====
+// ===== COMMAND HANDLER
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== 'shift') return;
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== 'shift') return;
 
-    if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
-        return interaction.reply({
-            content: '❌ You do not have permission to use this command.',
-            ephemeral: true
-        });
+  if (!isStaff(interaction)) {
+    return interaction.reply({ content: '❌ No permission.', ephemeral: true });
+  }
+
+  const sub = interaction.options.getSubcommand();
+
+  // SETUP
+  if (sub === 'setup') {
+    const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
+    const msg = await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('📋 Shift Board')
+          .setDescription('*No active shifts*')
+          .setColor(0x2b2d31)
+      ]
+    });
+
+    data.boardMessageId = msg.id;
+    saveData(data);
+    return interaction.reply({ content: '✅ Board created.', ephemeral: true });
+  }
+
+  // CREATE
+  if (sub === 'create') {
+    const title = interaction.options.getString('title');
+    const timeInput = interaction.options.getString('time');
+
+    const dt = DateTime.fromFormat(timeInput, 'HH:mm', { zone: TIMEZONE });
+    if (!dt.isValid) {
+      return interaction.reply({ content: '❌ Invalid time.', ephemeral: true });
     }
 
-    const sub = interaction.options.getSubcommand();
+    const now = DateTime.now().setZone(TIMEZONE);
+    const final = dt < now ? dt.plus({ days: 1 }) : dt;
+    const unix = Math.floor(final.toSeconds());
 
-    // CREATE
-    if (sub === 'create') {
-        const title = interaction.options.getString('title');
-        const timeInput = interaction.options.getString('time');
-        const timestamp = parseToTimestamp(timeInput);
+    data.shifts.push({
+      title,
+      time: `<t:${unix}:R> • <t:${unix}:F>`,
+      hostId: interaction.user.id,
+      status: 'Planned'
+    });
 
-        if (!timestamp) {
-            return interaction.reply({
-                content: '❌ Invalid time format. Use: YYYY-MM-DD HH:MM',
-                ephemeral: true
-            });
-        }
+    saveData(data);
+    await updateBoard();
 
-        data.shifts.push({
-            title,
-            timestamp,
-            status: 'Planned'
-        });
+    const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
+    const ping = await channel.send(
+      `🔔 <@&${PING_ROLE_ID}> **New shift:** **${title}**\n🕒 <t:${unix}:F>`
+    );
 
-        saveData();
-        await updateBoard();
+    setTimeout(() => ping.delete().catch(() => {}), 60 * 1000);
 
-        const pingMsg = await interaction.channel.send(`<@&${PING_ROLE_ID}>`);
-        setTimeout(() => pingMsg.delete().catch(() => {}), PING_DELETE_TIME);
+    return interaction.reply({ content: '✅ Shift created & ping sent.', ephemeral: true });
+  }
 
-        return interaction.reply({
-            content: `✅ Shift **${title}** created.`,
-            ephemeral: true
-        });
+  // END / CANCEL
+  if (sub === 'end' || sub === 'cancel') {
+    const title = interaction.options.getString('title');
+    const shift = data.shifts.find(s => s.title === title);
+    if (!shift) {
+      return interaction.reply({ content: '❌ Shift not found.', ephemeral: true });
     }
 
-    // END
-    if (sub === 'end') {
-        const title = interaction.options.getString('title');
-        const index = data.shifts.findIndex(s => s.title === title);
+    shift.status = sub === 'cancel' ? 'Cancelled' : 'Completed';
+    saveData(data);
+    await updateBoard();
+    scheduleRemoval(title);
 
-        if (index === -1) {
-            return interaction.reply({
-                content: '❌ Shift not found.',
-                ephemeral: true
-            });
-        }
+    return interaction.reply({
+      content: '🕒 Shift will be removed in 30 minutes.',
+      ephemeral: true
+    });
+  }
 
-        data.shifts.splice(index, 1);
-        saveData();
-        await updateBoard();
-
-        return interaction.reply({
-            content: `🛑 Shift **${title}** ended.`,
-            ephemeral: true
-        });
-    }
-
-    // CANCEL
-    if (sub === 'cancel') {
-        const title = interaction.options.getString('title');
-        const shift = data.shifts.find(s => s.title === title);
-
-        if (!shift) {
-            return interaction.reply({
-                content: '❌ Shift not found.',
-                ephemeral: true
-            });
-        }
-
-        shift.status = 'Canceled';
-        saveData();
-        await updateBoard();
-
-        return interaction.reply({
-            content: `⚠️ Shift **${title}** has been canceled.`,
-            ephemeral: true
-        });
-    }
-
-    // CLEAR
-    if (sub === 'clear') {
-        data.shifts = [];
-        saveData();
-        await updateBoard();
-
-        return interaction.reply({
-            content: '🧹 All shifts have been deleted.',
-            ephemeral: true
-        });
-    }
+  // CLEAR
+  if (sub === 'clear') {
+    data.shifts = [];
+    saveData(data);
+    await updateBoard();
+    return interaction.reply({ content: '🧹 All shifts cleared.', ephemeral: true });
+  }
 });
 
-// ===== LOGIN =====
+// ===== LOGIN
 client.login(TOKEN);
