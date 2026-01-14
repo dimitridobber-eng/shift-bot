@@ -10,15 +10,15 @@ const {
   EmbedBuilder
 } = require('discord.js');
 
-// ================= CONFIG =================
-const TOKEN = process.env.TOKEN; // ⬅️ VERPLICHT OP RENDER
-const CLIENT_ID = '1452037786730233856';
-const GUILD_ID = '1452797019834810512';
-const SHIFTS_CHANNEL_ID = '1411140770781597898';
-const STAFF_ROLE_ID = '1457118988558663781';
-const PING_ROLE_ID = '1453005359995289762';
+/* ================= CONFIG ================= */
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = '1459912910217281680';
+const GUILD_ID = '1373772001868513301';
+const SHIFTS_CHANNEL_ID = '1452800610272542791';
+const STAFF_ROLE_ID = '1459851940635869194';
+const PING_ROLE_ID = '1453005359995289762'; // shift ping role
 const TIMEZONE = 'Europe/Amsterdam';
-// ==========================================
+/* ========================================== */
 
 // ===== CLIENT
 const client = new Client({
@@ -26,28 +26,24 @@ const client = new Client({
 });
 
 // ===== DATA
-const DATA_FILE = './data.json';
-
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) {
+  if (!fs.existsSync('./data.json')) {
     return { boardMessageId: null, shifts: [] };
   }
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  return JSON.parse(fs.readFileSync('./data.json', 'utf8'));
 }
-
 function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  fs.writeFileSync('./data.json', JSON.stringify(data, null, 2));
 }
-
 let data = loadData();
 
-// ===== PERMISSIONS
+// ===== PERMISSION CHECK
 function isStaff(interaction) {
   return interaction.member.roles.cache.has(STAFF_ROLE_ID);
 }
 
-// ===== AUTO REMOVE SHIFT AFTER 30 MIN
-function scheduleRemoval(title) {
+// ===== AUTO REMOVE AFTER 30 MIN
+function scheduleShiftRemoval(title) {
   setTimeout(async () => {
     data.shifts = data.shifts.filter(s => s.title !== title);
     saveData(data);
@@ -62,49 +58,43 @@ const commands = [
     .setDescription('Shift system')
     .addSubcommand(sc =>
       sc.setName('setup')
-        .setDescription('Create the shift board')
+        .setDescription('Create shift board')
     )
     .addSubcommand(sc =>
       sc.setName('create')
         .setDescription('Create a shift')
         .addStringOption(o =>
-          o.setName('title')
-            .setDescription('Shift title')
-            .setRequired(true)
+          o.setName('title').setDescription('Shift title').setRequired(true)
         )
         .addStringOption(o =>
-          o.setName('time')
-            .setDescription('HH:mm (Amsterdam)')
-            .setRequired(true)
+          o.setName('date').setDescription('DD-MM-YYYY').setRequired(true)
+        )
+        .addStringOption(o =>
+          o.setName('time').setDescription('HH:mm').setRequired(true)
         )
     )
     .addSubcommand(sc =>
       sc.setName('end')
         .setDescription('End a shift')
         .addStringOption(o =>
-          o.setName('title')
-            .setDescription('Shift title')
-            .setRequired(true)
+          o.setName('title').setDescription('Shift title').setRequired(true)
         )
     )
     .addSubcommand(sc =>
       sc.setName('cancel')
         .setDescription('Cancel a shift')
         .addStringOption(o =>
-          o.setName('title')
-            .setDescription('Shift title')
-            .setRequired(true)
+          o.setName('title').setDescription('Shift title').setRequired(true)
         )
     )
     .addSubcommand(sc =>
       sc.setName('clear')
-        .setDescription('Clear all shifts immediately')
+        .setDescription('Clear all shifts')
     )
 ].map(c => c.toJSON());
 
 // ===== REGISTER COMMANDS
 const rest = new REST({ version: '10' }).setToken(TOKEN);
-
 (async () => {
   await rest.put(
     Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
@@ -128,16 +118,16 @@ async function updateBoard() {
         data.shifts.length === 0
           ? '*No active shifts*'
           : data.shifts.map((s, i) => {
-            const status =
-              s.status === 'Cancelled' ? '❌ Cancelled' :
-              s.status === 'Completed' ? '✅ Completed' :
-              '🟢 Planned';
+              const status =
+                s.status === 'Cancelled' ? '❌ Cancelled'
+                : s.status === 'Completed' ? '✅ Completed'
+                : '🟢 Planned';
 
-            return `**${i + 1}. ${s.title}**
-🕒 ${s.time}
+              return `**${i + 1}. ${s.title}**
+🕒 <t:${s.unix}:R> • <t:${s.unix}:F>
 👤 <@${s.hostId}>
 📌 **${status}**`;
-          }).join('\n\n')
+            }).join('\n\n')
       );
 
     await message.edit({ embeds: [embed] });
@@ -149,14 +139,13 @@ async function updateBoard() {
 
 // ===== READY
 client.once('ready', () => {
-  console.log(`🟢 Bot online als ${client.user.tag}`);
+  console.log(`🟢 Online as ${client.user.tag}`);
 });
 
 // ===== COMMAND HANDLER
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'shift') return;
-
   if (!isStaff(interaction)) {
     return interaction.reply({ content: '❌ No permission.', ephemeral: true });
   }
@@ -167,14 +156,11 @@ client.on('interactionCreate', async interaction => {
   if (sub === 'setup') {
     const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
     const msg = await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('📋 Shift Board')
-          .setDescription('*No active shifts*')
-          .setColor(0x2b2d31)
-      ]
+      embeds: [new EmbedBuilder()
+        .setTitle('📋 Shift Board')
+        .setDescription('*No active shifts*')
+        .setColor(0x2b2d31)]
     });
-
     data.boardMessageId = msg.id;
     saveData(data);
     return interaction.reply({ content: '✅ Board created.', ephemeral: true });
@@ -183,20 +169,24 @@ client.on('interactionCreate', async interaction => {
   // CREATE
   if (sub === 'create') {
     const title = interaction.options.getString('title');
-    const timeInput = interaction.options.getString('time');
+    const date = interaction.options.getString('date');
+    const time = interaction.options.getString('time');
 
-    const dt = DateTime.fromFormat(timeInput, 'HH:mm', { zone: TIMEZONE });
+    const dt = DateTime.fromFormat(
+      `${date} ${time}`,
+      'dd-MM-yyyy HH:mm',
+      { zone: TIMEZONE }
+    );
+
     if (!dt.isValid) {
-      return interaction.reply({ content: '❌ Invalid time.', ephemeral: true });
+      return interaction.reply({ content: '❌ Invalid date or time.', ephemeral: true });
     }
 
-    const now = DateTime.now().setZone(TIMEZONE);
-    const final = dt < now ? dt.plus({ days: 1 }) : dt;
-    const unix = Math.floor(final.toSeconds());
+    const unix = Math.floor(dt.toSeconds());
 
     data.shifts.push({
       title,
-      time: `<t:${unix}:R> • <t:${unix}:F>`,
+      unix,
       hostId: interaction.user.id,
       status: 'Planned'
     });
@@ -208,10 +198,9 @@ client.on('interactionCreate', async interaction => {
     const ping = await channel.send(
       `🔔 <@&${PING_ROLE_ID}> **New shift:** **${title}**\n🕒 <t:${unix}:F>`
     );
-
     setTimeout(() => ping.delete().catch(() => {}), 60 * 1000);
 
-    return interaction.reply({ content: '✅ Shift created & ping sent.', ephemeral: true });
+    return interaction.reply({ content: '✅ Shift created.', ephemeral: true });
   }
 
   // END / CANCEL
@@ -225,10 +214,10 @@ client.on('interactionCreate', async interaction => {
     shift.status = sub === 'cancel' ? 'Cancelled' : 'Completed';
     saveData(data);
     await updateBoard();
-    scheduleRemoval(title);
+    scheduleShiftRemoval(title);
 
     return interaction.reply({
-      content: '🕒 Shift will be removed in 30 minutes.',
+      content: '🕒 Shift will auto-delete in 30 minutes.',
       ephemeral: true
     });
   }
@@ -244,6 +233,3 @@ client.on('interactionCreate', async interaction => {
 
 // ===== LOGIN
 client.login(TOKEN);
-
-
-
