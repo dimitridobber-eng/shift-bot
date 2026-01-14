@@ -13,7 +13,7 @@ const {
 // ================= CONFIG =================
 const TOKEN = process.env.TOKEN; // ⬅️ VERPLICHT OP RENDER
 const CLIENT_ID = '1452037786730233856';
-const GUILD_ID = '1373772001868513301';
+const GUILD_ID = '1452797019834810512';
 const SHIFTS_CHANNEL_ID = '1411140770781597898';
 const STAFF_ROLE_ID = '1459851940635869194';
 const PING_ROLE_ID = '1453005359995289762';
@@ -244,4 +244,5 @@ client.on('interactionCreate', async interaction => {
 
 // ===== LOGIN
 client.login(TOKEN);
+
 
