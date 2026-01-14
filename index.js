@@ -12,10 +12,10 @@ const {
 
 /* ================= CONFIG ================= */
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = '1459912910217281680';
-const GUILD_ID = '1373772001868513301';
+const CLIENT_ID = '1452037786730233856';
+const GUILD_ID = '1452797019834810512';
 const SHIFTS_CHANNEL_ID = '1452800610272542791';
-const STAFF_ROLE_ID = '1459851940635869194';
+const STAFF_ROLE_ID = '1457118988558663781';
 const PING_ROLE_ID = '1453005359995289762'; // shift ping role
 const TIMEZONE = 'Europe/Amsterdam';
 /* ========================================== */
@@ -233,3 +233,4 @@ client.on('interactionCreate', async interaction => {
 
 // ===== LOGIN
 client.login(TOKEN);
+
