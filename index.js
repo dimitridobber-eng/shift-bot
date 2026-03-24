@@ -1,236 +1,214 @@
-require('dotenv').config();
-const fs = require('fs');
-const { DateTime } = require('luxon');
-const {
-  Client,
-  GatewayIntentBits,
-  SlashCommandBuilder,
-  REST,
-  Routes,
-  EmbedBuilder
-} = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
 
-/* ================= CONFIG ================= */
-const TOKEN = process.env.TOKEN;
-const CLIENT_ID = '1452037786730233856';
-const GUILD_ID = '1452797019834810512';
-const SHIFTS_CHANNEL_ID = '1452800610272542791';
-const STAFF_ROLE_ID = '1457118988558663781';
-const PING_ROLE_ID = '1453005359995289762'; // shift ping role
-const TIMEZONE = 'Europe/Amsterdam';
-/* ========================================== */
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// ===== CLIENT
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
-});
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 
-// ===== DATA
-function loadData() {
-  if (!fs.existsSync('./data.json')) {
-    return { boardMessageId: null, shifts: [] };
-  }
-  return JSON.parse(fs.readFileSync('./data.json', 'utf8'));
-}
-function saveData(data) {
-  fs.writeFileSync('./data.json', JSON.stringify(data, null, 2));
-}
-let data = loadData();
+const SHIFTS_CHANNEL_NAME = 'shifts';       // Your shifts channel name
+const ALLOWED_ROLE_NAME = 'Manager';        // Only this role can create/end/cancel shifts
+const PING_ROLE_NAME = 'shift ping';        // This role gets pinged when a shift is created
 
-// ===== PERMISSION CHECK
-function isStaff(interaction) {
-  return interaction.member.roles.cache.has(STAFF_ROLE_ID);
-}
+// Store active shifts in memory
+let activeShifts = [];
+let shiftBoardMessageId = null;
 
-// ===== AUTO REMOVE AFTER 30 MIN
-function scheduleShiftRemoval(title) {
-  setTimeout(async () => {
-    data.shifts = data.shifts.filter(s => s.title !== title);
-    saveData(data);
-    await updateBoard();
-  }, 30 * 60 * 1000);
-}
-
-// ===== SLASH COMMANDS
+// Slash commands definition
 const commands = [
   new SlashCommandBuilder()
     .setName('shift')
-    .setDescription('Shift system')
-    .addSubcommand(sc =>
-      sc.setName('setup')
-        .setDescription('Create shift board')
+    .setDescription('Manage shifts')
+    .addSubcommand(sub =>
+      sub.setName('create')
+        .setDescription('Create a new shift')
+        .addStringOption(opt => opt.setName('date').setDescription('Date of the shift (e.g. 25-03-2026)').setRequired(true))
+        .addStringOption(opt => opt.setName('time').setDescription('Time of the shift (e.g. 14:00)').setRequired(true))
+        .addStringOption(opt => opt.setName('worker').setDescription('Name of the worker').setRequired(true))
+        .addStringOption(opt => opt.setName('role').setDescription('Role/position (e.g. Cashier, Manager)').setRequired(true))
     )
-    .addSubcommand(sc =>
-      sc.setName('create')
-        .setDescription('Create a shift')
-        .addStringOption(o =>
-          o.setName('title').setDescription('Shift title').setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName('date').setDescription('DD-MM-YYYY').setRequired(true)
-        )
-        .addStringOption(o =>
-          o.setName('time').setDescription('HH:mm').setRequired(true)
-        )
-    )
-    .addSubcommand(sc =>
-      sc.setName('end')
+    .addSubcommand(sub =>
+      sub.setName('end')
         .setDescription('End a shift')
-        .addStringOption(o =>
-          o.setName('title').setDescription('Shift title').setRequired(true)
-        )
+        .addStringOption(opt => opt.setName('worker').setDescription('Worker name to end shift for').setRequired(true))
     )
-    .addSubcommand(sc =>
-      sc.setName('cancel')
+    .addSubcommand(sub =>
+      sub.setName('cancel')
         .setDescription('Cancel a shift')
-        .addStringOption(o =>
-          o.setName('title').setDescription('Shift title').setRequired(true)
-        )
+        .addStringOption(opt => opt.setName('worker').setDescription('Worker name to cancel shift for').setRequired(true))
     )
-    .addSubcommand(sc =>
-      sc.setName('clear')
-        .setDescription('Clear all shifts')
+    .addSubcommand(sub =>
+      sub.setName('list')
+        .setDescription('Show all active shifts')
     )
-].map(c => c.toJSON());
+].map(cmd => cmd.toJSON());
 
-// ===== REGISTER COMMANDS
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-(async () => {
-  await rest.put(
-    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-    { body: commands }
-  );
-  console.log('✅ Slash commands registered');
-})();
+// Register commands on ready
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
 
-// ===== UPDATE BOARD
-async function updateBoard() {
-  if (!data.boardMessageId) return;
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log('✅ Slash commands registered!');
+  } catch (err) {
+    console.error('❌ Failed to register commands:', err);
+  }
+});
+
+// Check if a member has the allowed role
+function hasAllowedRole(member) {
+  return member.roles.cache.some(r => r.name === ALLOWED_ROLE_NAME);
+}
+
+// Build the shift board embed
+function buildShiftBoard() {
+  const embed = new EmbedBuilder()
+    .setTitle('📋 Shift Board')
+    .setColor(0x5865F2)
+    .setTimestamp();
+
+  if (activeShifts.length === 0) {
+    embed.setDescription('*No active shifts*');
+  } else {
+    activeShifts.forEach((shift, i) => {
+      embed.addFields({
+        name: `${i + 1}. ${shift.worker} — ${shift.role}`,
+        value: `📅 **Date:** ${shift.date}\n⏰ **Time:** ${shift.time}\n✅ **Status:** Active`,
+        inline: false
+      });
+    });
+  }
+
+  return embed;
+}
+
+// Update or post the shift board
+async function updateShiftBoard(guild) {
+  const channel = guild.channels.cache.find(c => c.name === SHIFTS_CHANNEL_NAME);
+  if (!channel) return;
+
+  const embed = buildShiftBoard();
 
   try {
-    const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
-    const message = await channel.messages.fetch(data.boardMessageId);
-
-    const embed = new EmbedBuilder()
-      .setTitle('📋 Shift Board')
-      .setColor(0x2b2d31)
-      .setDescription(
-        data.shifts.length === 0
-          ? '*No active shifts*'
-          : data.shifts.map((s, i) => {
-              const status =
-                s.status === 'Cancelled' ? '❌ Cancelled'
-                : s.status === 'Completed' ? '✅ Completed'
-                : '🟢 Planned';
-
-              return `**${i + 1}. ${s.title}**
-🕒 <t:${s.unix}:R> • <t:${s.unix}:F>
-👤 <@${s.hostId}>
-📌 **${status}**`;
-            }).join('\n\n')
-      );
-
-    await message.edit({ embeds: [embed] });
+    if (shiftBoardMessageId) {
+      const msg = await channel.messages.fetch(shiftBoardMessageId);
+      await msg.edit({ embeds: [embed] });
+    } else {
+      const msg = await channel.send({ embeds: [embed] });
+      shiftBoardMessageId = msg.id;
+    }
   } catch {
-    data.boardMessageId = null;
-    saveData(data);
+    const msg = await channel.send({ embeds: [embed] });
+    shiftBoardMessageId = msg.id;
   }
 }
 
-// ===== READY
-client.once('ready', () => {
-  console.log(`🟢 Online as ${client.user.tag}`);
-});
-
-// ===== COMMAND HANDLER
+// Handle interactions
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'shift') return;
-  if (!isStaff(interaction)) {
-    return interaction.reply({ content: '❌ No permission.', ephemeral: true });
-  }
 
   const sub = interaction.options.getSubcommand();
 
-  // SETUP
-  if (sub === 'setup') {
-    const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
-    const msg = await channel.send({
-      embeds: [new EmbedBuilder()
-        .setTitle('📋 Shift Board')
-        .setDescription('*No active shifts*')
-        .setColor(0x2b2d31)]
-    });
-    data.boardMessageId = msg.id;
-    saveData(data);
-    return interaction.reply({ content: '✅ Board created.', ephemeral: true });
+  // ✅ Role permission check for create, end, cancel
+  if (['create', 'end', 'cancel'].includes(sub)) {
+    if (!hasAllowedRole(interaction.member)) {
+      return interaction.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('🚫 No Permission')
+            .setColor(0xED4245)
+            .setDescription(`You need the **${ALLOWED_ROLE_NAME}** role to use this command.`)
+        ],
+        ephemeral: true
+      });
+    }
   }
 
-  // CREATE
   if (sub === 'create') {
-    const title = interaction.options.getString('title');
     const date = interaction.options.getString('date');
     const time = interaction.options.getString('time');
+    const worker = interaction.options.getString('worker');
+    const role = interaction.options.getString('role');
 
-    const dt = DateTime.fromFormat(
-      `${date} ${time}`,
-      'dd-MM-yyyy HH:mm',
-      { zone: TIMEZONE }
-    );
-
-    if (!dt.isValid) {
-      return interaction.reply({ content: '❌ Invalid date or time.', ephemeral: true });
+    // Check if worker already has a shift
+    const existing = activeShifts.find(s => s.worker.toLowerCase() === worker.toLowerCase());
+    if (existing) {
+      return interaction.reply({
+        content: `⚠️ **${worker}** already has an active shift! End or cancel it first.`,
+        ephemeral: true
+      });
     }
 
-    const unix = Math.floor(dt.toSeconds());
+    activeShifts.push({ date, time, worker, role });
+    await updateShiftBoard(interaction.guild);
 
-    data.shifts.push({
-      title,
-      unix,
-      hostId: interaction.user.id,
-      status: 'Planned'
+    // Find the ping role
+    const pingRole = interaction.guild.roles.cache.find(r => r.name === PING_ROLE_NAME);
+    const pingText = pingRole ? `<@&${pingRole.id}>` : `@${PING_ROLE_NAME}`;
+
+    const confirmEmbed = new EmbedBuilder()
+      .setTitle('✅ New Shift Created!')
+      .setColor(0x57F287)
+      .addFields(
+        { name: '👤 Worker', value: worker, inline: true },
+        { name: '🎭 Role', value: role, inline: true },
+        { name: '📅 Date', value: date, inline: true },
+        { name: '⏰ Time', value: time, inline: true }
+      )
+      .setFooter({ text: `Created by ${interaction.user.username}` });
+
+    // Reply with embed AND ping the role
+    await interaction.reply({
+      content: `${pingText} — A new shift has been scheduled!`,
+      embeds: [confirmEmbed]
     });
 
-    saveData(data);
-    await updateBoard();
+  } else if (sub === 'end') {
+    const worker = interaction.options.getString('worker');
+    const index = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
 
-    const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
-    const ping = await channel.send(
-      `🔔 <@&${PING_ROLE_ID}> **New shift:** **${title}**\n🕒 <t:${unix}:F>`
-    );
-    setTimeout(() => ping.delete().catch(() => {}), 60 * 1000);
-
-    return interaction.reply({ content: '✅ Shift created.', ephemeral: true });
-  }
-
-  // END / CANCEL
-  if (sub === 'end' || sub === 'cancel') {
-    const title = interaction.options.getString('title');
-    const shift = data.shifts.find(s => s.title === title);
-    if (!shift) {
-      return interaction.reply({ content: '❌ Shift not found.', ephemeral: true });
+    if (index === -1) {
+      return interaction.reply({ content: `⚠️ No active shift found for **${worker}**.`, ephemeral: true });
     }
 
-    shift.status = sub === 'cancel' ? 'Cancelled' : 'Completed';
-    saveData(data);
-    await updateBoard();
-    scheduleShiftRemoval(title);
+    const shift = activeShifts.splice(index, 1)[0];
+    await updateShiftBoard(interaction.guild);
 
-    return interaction.reply({
-      content: '🕒 Shift will auto-delete in 30 minutes.',
-      ephemeral: true
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('🏁 Shift Ended')
+          .setColor(0xFEE75C)
+          .setDescription(`**${shift.worker}**'s shift as *${shift.role}* on ${shift.date} at ${shift.time} has ended.`)
+          .setFooter({ text: `Ended by ${interaction.user.username}` })
+      ]
     });
-  }
 
-  // CLEAR
-  if (sub === 'clear') {
-    data.shifts = [];
-    saveData(data);
-    await updateBoard();
-    return interaction.reply({ content: '🧹 All shifts cleared.', ephemeral: true });
+  } else if (sub === 'cancel') {
+    const worker = interaction.options.getString('worker');
+    const index = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
+
+    if (index === -1) {
+      return interaction.reply({ content: `⚠️ No active shift found for **${worker}**.`, ephemeral: true });
+    }
+
+    const shift = activeShifts.splice(index, 1)[0];
+    await updateShiftBoard(interaction.guild);
+
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('❌ Shift Cancelled')
+          .setColor(0xED4245)
+          .setDescription(`**${shift.worker}**'s shift as *${shift.role}* on ${shift.date} at ${shift.time} has been cancelled.`)
+          .setFooter({ text: `Cancelled by ${interaction.user.username}` })
+      ]
+    });
+
+  } else if (sub === 'list') {
+    await interaction.reply({ embeds: [buildShiftBoard()], ephemeral: true });
   }
 });
 
-// ===== LOGIN
 client.login(TOKEN);
-
