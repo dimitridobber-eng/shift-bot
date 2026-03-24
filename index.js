@@ -2,12 +2,13 @@ const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuild
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-
-const SHIFTS_CHANNEL_NAME = 'shifts';       // Your shifts channel name
-const ALLOWED_ROLE_NAME = 'Manager';        // Only this role can create/end/cancel shifts
-const PING_ROLE_NAME = 'shift ping';        // This role gets pinged when a shift is created
+// ── Config from Railway Environment Variables ──────────────────────────────
+const TOKEN               = process.env.DISCORD_TOKEN;
+const CLIENT_ID           = process.env.CLIENT_ID;
+const SHIFTS_CHANNEL_NAME = process.env.SHIFTS_CHANNEL_NAME  || 'shifts';
+const ALLOWED_ROLE_NAME   = process.env.ALLOWED_ROLE_NAME    || 'Manager';
+const PING_ROLE_NAME      = process.env.PING_ROLE_NAME       || 'shift ping';
+// ──────────────────────────────────────────────────────────────────────────
 
 // Store active shifts in memory
 let activeShifts = [];
@@ -45,6 +46,9 @@ const commands = [
 // Register commands on ready
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`📋 Shifts channel : ${SHIFTS_CHANNEL_NAME}`);
+  console.log(`🔒 Allowed role   : ${ALLOWED_ROLE_NAME}`);
+  console.log(`🔔 Ping role      : ${PING_ROLE_NAME}`);
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
@@ -85,7 +89,10 @@ function buildShiftBoard() {
 // Update or post the shift board
 async function updateShiftBoard(guild) {
   const channel = guild.channels.cache.find(c => c.name === SHIFTS_CHANNEL_NAME);
-  if (!channel) return;
+  if (!channel) {
+    console.error(`❌ Could not find channel: ${SHIFTS_CHANNEL_NAME}`);
+    return;
+  }
 
   const embed = buildShiftBoard();
 
@@ -110,7 +117,7 @@ client.on('interactionCreate', async interaction => {
 
   const sub = interaction.options.getSubcommand();
 
-  // ✅ Role permission check for create, end, cancel
+  // 🔒 Role permission check for create, end, cancel
   if (['create', 'end', 'cancel'].includes(sub)) {
     if (!hasAllowedRole(interaction.member)) {
       return interaction.reply({
@@ -126,12 +133,11 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (sub === 'create') {
-    const date = interaction.options.getString('date');
-    const time = interaction.options.getString('time');
+    const date   = interaction.options.getString('date');
+    const time   = interaction.options.getString('time');
     const worker = interaction.options.getString('worker');
-    const role = interaction.options.getString('role');
+    const role   = interaction.options.getString('role');
 
-    // Check if worker already has a shift
     const existing = activeShifts.find(s => s.worker.toLowerCase() === worker.toLowerCase());
     if (existing) {
       return interaction.reply({
@@ -143,7 +149,6 @@ client.on('interactionCreate', async interaction => {
     activeShifts.push({ date, time, worker, role });
     await updateShiftBoard(interaction.guild);
 
-    // Find the ping role
     const pingRole = interaction.guild.roles.cache.find(r => r.name === PING_ROLE_NAME);
     const pingText = pingRole ? `<@&${pingRole.id}>` : `@${PING_ROLE_NAME}`;
 
@@ -152,13 +157,12 @@ client.on('interactionCreate', async interaction => {
       .setColor(0x57F287)
       .addFields(
         { name: '👤 Worker', value: worker, inline: true },
-        { name: '🎭 Role', value: role, inline: true },
-        { name: '📅 Date', value: date, inline: true },
-        { name: '⏰ Time', value: time, inline: true }
+        { name: '🎭 Role',   value: role,   inline: true },
+        { name: '📅 Date',   value: date,   inline: true },
+        { name: '⏰ Time',   value: time,   inline: true }
       )
       .setFooter({ text: `Created by ${interaction.user.username}` });
 
-    // Reply with embed AND ping the role
     await interaction.reply({
       content: `${pingText} — A new shift has been scheduled!`,
       embeds: [confirmEmbed]
@@ -166,7 +170,7 @@ client.on('interactionCreate', async interaction => {
 
   } else if (sub === 'end') {
     const worker = interaction.options.getString('worker');
-    const index = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
+    const index  = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
 
     if (index === -1) {
       return interaction.reply({ content: `⚠️ No active shift found for **${worker}**.`, ephemeral: true });
@@ -187,7 +191,7 @@ client.on('interactionCreate', async interaction => {
 
   } else if (sub === 'cancel') {
     const worker = interaction.options.getString('worker');
-    const index = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
+    const index  = activeShifts.findIndex(s => s.worker.toLowerCase() === worker.toLowerCase());
 
     if (index === -1) {
       return interaction.reply({ content: `⚠️ No active shift found for **${worker}**.`, ephemeral: true });
