@@ -12,19 +12,17 @@ const client = new Client({
 // ── Config from Railway Environment Variables ──────────────────────────────
 const TOKEN               = process.env.DISCORD_TOKEN;
 const CLIENT_ID           = process.env.CLIENT_ID;
-const SHIFTS_CHANNEL_NAME = process.env.SHIFTS_CHANNEL_NAME  || 'shifts';
-const ALLOWED_ROLE_ID     = process.env.ALLOWED_ROLE_ID;      // Role ID (not name!)
-const PING_ROLE_ID        = process.env.PING_ROLE_ID;         // Role ID (not name!)
+const SHIFTS_CHANNEL_NAME = process.env.SHIFTS_CHANNEL_NAME || 'shifts';
+const ALLOWED_ROLE_ID     = process.env.ALLOWED_ROLE_ID;
+const PING_ROLE_ID        = process.env.PING_ROLE_ID;
 // ──────────────────────────────────────────────────────────────────────────
 
 // Keep Railway awake
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-// Store active shifts in memory
 let activeShifts = [];
 let shiftBoardMessageId = null;
 
-// Slash commands
 const commands = [
   new SlashCommandBuilder()
     .setName('shift')
@@ -53,12 +51,9 @@ const commands = [
     )
 ].map(cmd => cmd.toJSON());
 
-// Register commands on ready
+// On ready: register commands + find existing shift board message
 client.once('ready', async () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
-  console.log(`📋 Shifts channel : ${SHIFTS_CHANNEL_NAME}`);
-  console.log(`🔒 Allowed role ID: ${ALLOWED_ROLE_ID}`);
-  console.log(`🔔 Ping role ID   : ${PING_ROLE_ID}`);
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
@@ -67,15 +62,37 @@ client.once('ready', async () => {
   } catch (err) {
     console.error('❌ Failed to register commands:', err);
   }
+
+  // Find the shift board message in the shifts channel
+  try {
+    const guild = client.guilds.cache.first();
+    if (guild) {
+      const channel = guild.channels.cache.find(c => c.name === SHIFTS_CHANNEL_NAME);
+      if (channel) {
+        const messages = await channel.messages.fetch({ limit: 50 });
+        const boardMsg = messages.find(m =>
+          m.author.id === client.user.id &&
+          m.embeds.length > 0 &&
+          m.embeds[0].title === '📋 Shift Board'
+        );
+        if (boardMsg) {
+          shiftBoardMessageId = boardMsg.id;
+          console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
+        } else {
+          console.log('ℹ️ No existing shift board found, will create one on next shift.');
+        }
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error finding shift board:', err);
+  }
 });
 
-// Check if member has the allowed role by ID
 function hasAllowedRole(member) {
-  if (!ALLOWED_ROLE_ID) return true; // if not set, allow everyone
+  if (!ALLOWED_ROLE_ID) return true;
   return member.roles.cache.has(ALLOWED_ROLE_ID);
 }
 
-// Build the shift board embed
 function buildShiftBoard() {
   const embed = new EmbedBuilder()
     .setTitle('📋 Shift Board')
@@ -97,7 +114,6 @@ function buildShiftBoard() {
   return embed;
 }
 
-// Update or post the shift board in #shifts
 async function updateShiftBoard(guild) {
   const channel = guild.channels.cache.find(c => c.name === SHIFTS_CHANNEL_NAME);
   if (!channel) {
@@ -111,17 +127,19 @@ async function updateShiftBoard(guild) {
     if (shiftBoardMessageId) {
       const msg = await channel.messages.fetch(shiftBoardMessageId);
       await msg.edit({ embeds: [embed] });
+      console.log('✅ Shift board updated!');
     } else {
       const msg = await channel.send({ embeds: [embed] });
       shiftBoardMessageId = msg.id;
+      console.log('✅ Shift board created!');
     }
-  } catch {
+  } catch (err) {
+    console.log('⚠️ Could not find old board message, creating new one...');
     const msg = await channel.send({ embeds: [embed] });
     shiftBoardMessageId = msg.id;
   }
 }
 
-// Handle interactions
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'shift') return;
@@ -130,7 +148,6 @@ client.on('interactionCreate', async interaction => {
   console.log(`📥 /shift ${sub} by ${interaction.user.username}`);
 
   try {
-    // 🔒 Role check for create, end, cancel
     if (['create', 'end', 'cancel'].includes(sub)) {
       if (!hasAllowedRole(interaction.member)) {
         return await interaction.reply({
@@ -175,7 +192,6 @@ client.on('interactionCreate', async interaction => {
         )
         .setFooter({ text: `Created by ${interaction.user.username}` });
 
-      // Public so everyone sees it
       await interaction.reply({
         content: pingText ? `${pingText} — A new shift has been scheduled!` : 'A new shift has been scheduled!',
         embeds: [confirmEmbed]
@@ -192,7 +208,6 @@ client.on('interactionCreate', async interaction => {
       const shift = activeShifts.splice(index, 1)[0];
       await updateShiftBoard(interaction.guild);
 
-      // Public so everyone sees the board update
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -214,7 +229,6 @@ client.on('interactionCreate', async interaction => {
       const shift = activeShifts.splice(index, 1)[0];
       await updateShiftBoard(interaction.guild);
 
-      // Public so everyone sees the board update
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -226,10 +240,7 @@ client.on('interactionCreate', async interaction => {
       });
 
     } else if (sub === 'list') {
-      // ✅ Now PUBLIC so everyone can see
-      await interaction.reply({
-        embeds: [buildShiftBoard()]
-      });
+      await interaction.reply({ embeds: [buildShiftBoard()] });
     }
 
   } catch (err) {
@@ -243,6 +254,6 @@ client.on('interactionCreate', async interaction => {
 });
 
 process.on('unhandledRejection', err => console.error('❌ Unhandled rejection:', err));
-process.on('uncaughtException',  err => console.error('❌ Uncaught exception:',  err));
+process.on('uncaughtException',  err => console.error('❌ Uncaught exception:', err));
 
 client.login(TOKEN);
