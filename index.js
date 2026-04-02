@@ -4,7 +4,7 @@ const http = require('http');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,   // needed to read member roles
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
   ]
 });
@@ -12,19 +12,19 @@ const client = new Client({
 // ── Config from Railway Environment Variables ──────────────────────────────
 const TOKEN               = process.env.DISCORD_TOKEN;
 const CLIENT_ID           = process.env.CLIENT_ID;
-const SHIFTS_CHANNEL_NAME = process.env.SHIFTS_CHANNEL_NAME || 'shifts';
-const ALLOWED_ROLE_NAME   = process.env.ALLOWED_ROLE_NAME   || 'Manager';
-const PING_ROLE_NAME      = process.env.PING_ROLE_NAME      || 'shift ping';
+const SHIFTS_CHANNEL_NAME = process.env.SHIFTS_CHANNEL_NAME  || 'shifts';
+const ALLOWED_ROLE_ID     = process.env.ALLOWED_ROLE_ID;      // Role ID (not name!)
+const PING_ROLE_ID        = process.env.PING_ROLE_ID;         // Role ID (not name!)
 // ──────────────────────────────────────────────────────────────────────────
 
-// Keep Railway awake (free tier fix)
+// Keep Railway awake
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 // Store active shifts in memory
 let activeShifts = [];
 let shiftBoardMessageId = null;
 
-// Slash commands definition
+// Slash commands
 const commands = [
   new SlashCommandBuilder()
     .setName('shift')
@@ -57,8 +57,8 @@ const commands = [
 client.once('ready', async () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
   console.log(`📋 Shifts channel : ${SHIFTS_CHANNEL_NAME}`);
-  console.log(`🔒 Allowed role   : ${ALLOWED_ROLE_NAME}`);
-  console.log(`🔔 Ping role      : ${PING_ROLE_NAME}`);
+  console.log(`🔒 Allowed role ID: ${ALLOWED_ROLE_ID}`);
+  console.log(`🔔 Ping role ID   : ${PING_ROLE_ID}`);
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
@@ -69,9 +69,10 @@ client.once('ready', async () => {
   }
 });
 
-// Check if a member has the allowed role
+// Check if member has the allowed role by ID
 function hasAllowedRole(member) {
-  return member.roles.cache.some(r => r.name === ALLOWED_ROLE_NAME);
+  if (!ALLOWED_ROLE_ID) return true; // if not set, allow everyone
+  return member.roles.cache.has(ALLOWED_ROLE_ID);
 }
 
 // Build the shift board embed
@@ -96,7 +97,7 @@ function buildShiftBoard() {
   return embed;
 }
 
-// Update or post the shift board
+// Update or post the shift board in #shifts
 async function updateShiftBoard(guild) {
   const channel = guild.channels.cache.find(c => c.name === SHIFTS_CHANNEL_NAME);
   if (!channel) {
@@ -126,10 +127,10 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName !== 'shift') return;
 
   const sub = interaction.options.getSubcommand();
-  console.log(`📥 Command: /shift ${sub} by ${interaction.user.username}`);
+  console.log(`📥 /shift ${sub} by ${interaction.user.username}`);
 
   try {
-    // 🔒 Role permission check for create, end, cancel
+    // 🔒 Role check for create, end, cancel
     if (['create', 'end', 'cancel'].includes(sub)) {
       if (!hasAllowedRole(interaction.member)) {
         return await interaction.reply({
@@ -137,7 +138,7 @@ client.on('interactionCreate', async interaction => {
             new EmbedBuilder()
               .setTitle('🚫 No Permission')
               .setColor(0xED4245)
-              .setDescription(`You need the **${ALLOWED_ROLE_NAME}** role to use this command.`)
+              .setDescription(`You don't have the required role to use this command.`)
           ],
           ephemeral: true
         });
@@ -161,8 +162,7 @@ client.on('interactionCreate', async interaction => {
       activeShifts.push({ date, time, worker, role });
       await updateShiftBoard(interaction.guild);
 
-      const pingRole = interaction.guild.roles.cache.find(r => r.name === PING_ROLE_NAME);
-      const pingText = pingRole ? `<@&${pingRole.id}>` : `@${PING_ROLE_NAME}`;
+      const pingText = PING_ROLE_ID ? `<@&${PING_ROLE_ID}>` : '';
 
       const confirmEmbed = new EmbedBuilder()
         .setTitle('✅ New Shift Created!')
@@ -175,8 +175,9 @@ client.on('interactionCreate', async interaction => {
         )
         .setFooter({ text: `Created by ${interaction.user.username}` });
 
+      // Public so everyone sees it
       await interaction.reply({
-        content: `${pingText} — A new shift has been scheduled!`,
+        content: pingText ? `${pingText} — A new shift has been scheduled!` : 'A new shift has been scheduled!',
         embeds: [confirmEmbed]
       });
 
@@ -191,6 +192,7 @@ client.on('interactionCreate', async interaction => {
       const shift = activeShifts.splice(index, 1)[0];
       await updateShiftBoard(interaction.guild);
 
+      // Public so everyone sees the board update
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -212,6 +214,7 @@ client.on('interactionCreate', async interaction => {
       const shift = activeShifts.splice(index, 1)[0];
       await updateShiftBoard(interaction.guild);
 
+      // Public so everyone sees the board update
       await interaction.reply({
         embeds: [
           new EmbedBuilder()
@@ -223,12 +226,14 @@ client.on('interactionCreate', async interaction => {
       });
 
     } else if (sub === 'list') {
-      await interaction.reply({ embeds: [buildShiftBoard()], ephemeral: true });
+      // ✅ Now PUBLIC so everyone can see
+      await interaction.reply({
+        embeds: [buildShiftBoard()]
+      });
     }
 
   } catch (err) {
     console.error('❌ Command error:', err);
-    // Try to respond if we haven't already
     try {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ Something went wrong, please try again.', ephemeral: true });
@@ -237,7 +242,6 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Global error handlers so the bot never crashes silently
 process.on('unhandledRejection', err => console.error('❌ Unhandled rejection:', err));
 process.on('uncaughtException',  err => console.error('❌ Uncaught exception:',  err));
 
