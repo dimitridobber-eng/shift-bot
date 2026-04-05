@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const http = require('http');
+const fs = require('fs');
 
 const client = new Client({
   intents: [
@@ -20,9 +21,32 @@ const PING_ROLE_ID      = process.env.PING_ROLE_ID;
 // Keep Railway awake
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-let shifts = [];        // { id, date, time, role }
-let nextId = 1;         // auto incrementing shift ID
-let shiftBoardMessageId = null;
+// ── Persistent storage using JSON file ────────────────────────────────────
+const DATA_FILE = '/tmp/shifts.json';
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error('❌ Error loading data:', err);
+  }
+  return { shifts: [], nextId: 1, shiftBoardMessageId: null };
+}
+
+function saveData() {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify({ shifts, nextId, shiftBoardMessageId }, null, 2));
+  } catch (err) {
+    console.error('❌ Error saving data:', err);
+  }
+}
+
+// Load saved data
+let { shifts, nextId, shiftBoardMessageId } = loadData();
+// ──────────────────────────────────────────────────────────────────────────
 
 const commands = [
   new SlashCommandBuilder()
@@ -51,10 +75,10 @@ const commands = [
     )
 ].map(cmd => cmd.toJSON());
 
-// On ready
 client.once('ready', async () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
   console.log(`📋 Shifts channel ID: ${SHIFTS_CHANNEL_ID}`);
+  console.log(`🔔 Ping role ID: ${PING_ROLE_ID}`);
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
@@ -64,26 +88,40 @@ client.once('ready', async () => {
     console.error('❌ Failed to register commands:', err);
   }
 
-  // Find existing shift board on startup
+  // Find or create shift board on startup
   try {
     const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
     if (channel) {
-      const messages = await channel.messages.fetch({ limit: 50 });
-      const boardMsg = messages.find(m =>
-        m.author.id === client.user.id &&
-        m.embeds.length > 0 &&
-        m.embeds[0].title === '📋 Shift Board'
-      );
-      if (boardMsg) {
-        shiftBoardMessageId = boardMsg.id;
-        console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
+      if (shiftBoardMessageId) {
+        // Try to find the saved board message
+        try {
+          await channel.messages.fetch(shiftBoardMessageId);
+          console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
+        } catch {
+          console.log('⚠️ Saved board message not found, posting new one...');
+          shiftBoardMessageId = null;
+          await postNewBoard(channel);
+        }
       } else {
-        console.log('ℹ️ No existing board found, will post one now...');
-        await postNewBoard(channel);
+        // Search last 50 messages for a board
+        const messages = await channel.messages.fetch({ limit: 50 });
+        const boardMsg = messages.find(m =>
+          m.author.id === client.user.id &&
+          m.embeds.length > 0 &&
+          m.embeds[0].title === '📋 Shift Board'
+        );
+        if (boardMsg) {
+          shiftBoardMessageId = boardMsg.id;
+          saveData();
+          console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
+        } else {
+          console.log('ℹ️ No board found, posting new one...');
+          await postNewBoard(channel);
+        }
       }
     }
   } catch (err) {
-    console.error('❌ Error finding shift board:', err);
+    console.error('❌ Error on startup:', err);
   }
 });
 
@@ -116,7 +154,8 @@ function buildShiftBoard() {
 async function postNewBoard(channel) {
   const msg = await channel.send({ embeds: [buildShiftBoard()] });
   shiftBoardMessageId = msg.id;
-  console.log('✅ Shift board posted!');
+  saveData();
+  console.log(`✅ Shift board posted! ID: ${shiftBoardMessageId}`);
 }
 
 async function updateShiftBoard() {
@@ -131,14 +170,15 @@ async function updateShiftBoard() {
       try {
         const msg = await channel.messages.fetch(shiftBoardMessageId);
         await msg.edit({ embeds: [buildShiftBoard()] });
-        console.log('✅ Shift board updated!');
-      } catch {
-        console.log('⚠️ Board message gone, posting new one...');
-        await postNewBoard(channel);
+        console.log('✅ Shift board edited!');
+        return;
+      } catch (err) {
+        console.log('⚠️ Could not edit board, posting new one...', err.message);
+        shiftBoardMessageId = null;
       }
-    } else {
-      await postNewBoard(channel);
     }
+
+    await postNewBoard(channel);
   } catch (err) {
     console.error('❌ Error updating shift board:', err);
   }
@@ -174,8 +214,10 @@ client.on('interactionCreate', async interaction => {
 
       const shift = { id: nextId++, date, time, role };
       shifts.push(shift);
+      saveData();
       await updateShiftBoard();
 
+      // ✅ Ping fix — using allowedMentions to make sure it pings
       const pingText = PING_ROLE_ID ? `<@&${PING_ROLE_ID}>` : '';
 
       const confirmEmbed = new EmbedBuilder()
@@ -191,7 +233,8 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.reply({
         content: pingText ? `${pingText} — Shift #${shift.id} has been scheduled!` : `Shift #${shift.id} has been scheduled!`,
-        embeds: [confirmEmbed]
+        embeds: [confirmEmbed],
+        allowedMentions: { roles: PING_ROLE_ID ? [PING_ROLE_ID] : [] }
       });
 
     } else if (sub === 'end') {
@@ -203,6 +246,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       const shift = shifts.splice(index, 1)[0];
+      saveData();
       await updateShiftBoard();
 
       await interaction.reply({
@@ -224,6 +268,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       const shift = shifts.splice(index, 1)[0];
+      saveData();
       await updateShiftBoard();
 
       await interaction.reply({
