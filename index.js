@@ -16,12 +16,14 @@ const CLIENT_ID         = process.env.CLIENT_ID;
 const SHIFTS_CHANNEL_ID = process.env.SHIFTS_CHANNEL_ID;
 const ALLOWED_ROLE_ID   = process.env.ALLOWED_ROLE_ID;
 const PING_ROLE_ID      = process.env.PING_ROLE_ID;
+// Bot timezone offset in hours from UTC, e.g. 2 for Amsterdam (CEST)
+const TIMEZONE_OFFSET   = parseInt(process.env.TIMEZONE_OFFSET || '2');
 // ──────────────────────────────────────────────────────────────────────────
 
 // Keep Railway awake
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-// ── Persistent storage using JSON file ────────────────────────────────────
+// ── Persistent storage ────────────────────────────────────────────────────
 const DATA_FILE = '/tmp/shifts.json';
 
 function loadData() {
@@ -44,9 +46,26 @@ function saveData() {
   }
 }
 
-// Load saved data
 let { shifts, nextId, shiftBoardMessageId } = loadData();
 // ──────────────────────────────────────────────────────────────────────────
+
+// Convert "25-03-2026" + "20:00" to a Unix timestamp using the bot's timezone
+function toUnixTimestamp(date, time) {
+  // date format: DD-MM-YYYY, time format: HH:MM
+  const [day, month, year] = date.split('-').map(Number);
+  const [hours, minutes]   = time.split(':').map(Number);
+
+  // Build UTC time by subtracting timezone offset
+  const utcMs = Date.UTC(year, month - 1, day, hours - TIMEZONE_OFFSET, minutes);
+  return Math.floor(utcMs / 1000);
+}
+
+// Discord timestamp formats:
+// <t:UNIX:F> = full date + time (e.g. Sunday, 5 April 2026 20:00)
+// <t:UNIX:R> = relative (e.g. in 2 hours)
+function discordTimestamp(unix) {
+  return `<t:${unix}:F> (<t:${unix}:R>)`;
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -56,7 +75,7 @@ const commands = [
       sub.setName('create')
         .setDescription('Create a new shift')
         .addStringOption(opt => opt.setName('date').setDescription('Date (e.g. 25-03-2026)').setRequired(true))
-        .addStringOption(opt => opt.setName('time').setDescription('Time (e.g. 14:00)').setRequired(true))
+        .addStringOption(opt => opt.setName('time').setDescription('Time in your timezone (e.g. 20:00)').setRequired(true))
         .addStringOption(opt => opt.setName('role').setDescription('Role/position (e.g. Cashier)').setRequired(true))
     )
     .addSubcommand(sub =>
@@ -77,8 +96,8 @@ const commands = [
 
 client.once('ready', async () => {
   console.log(`✅ Bot online as ${client.user.tag}`);
-  console.log(`📋 Shifts channel ID: ${SHIFTS_CHANNEL_ID}`);
-  console.log(`🔔 Ping role ID: ${PING_ROLE_ID}`);
+  console.log(`📋 Shifts channel ID : ${SHIFTS_CHANNEL_ID}`);
+  console.log(`🕐 Timezone offset   : UTC+${TIMEZONE_OFFSET}`);
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
@@ -88,12 +107,10 @@ client.once('ready', async () => {
     console.error('❌ Failed to register commands:', err);
   }
 
-  // Find or create shift board on startup
   try {
     const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
     if (channel) {
       if (shiftBoardMessageId) {
-        // Try to find the saved board message
         try {
           await channel.messages.fetch(shiftBoardMessageId);
           console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
@@ -103,7 +120,6 @@ client.once('ready', async () => {
           await postNewBoard(channel);
         }
       } else {
-        // Search last 50 messages for a board
         const messages = await channel.messages.fetch({ limit: 50 });
         const boardMsg = messages.find(m =>
           m.author.id === client.user.id &&
@@ -115,7 +131,6 @@ client.once('ready', async () => {
           saveData();
           console.log(`✅ Found existing shift board: ${shiftBoardMessageId}`);
         } else {
-          console.log('ℹ️ No board found, posting new one...');
           await postNewBoard(channel);
         }
       }
@@ -142,7 +157,7 @@ function buildShiftBoard() {
     shifts.forEach(shift => {
       embed.addFields({
         name: `#${shift.id} — ${shift.role}`,
-        value: `📅 **Date:** ${shift.date}\n⏰ **Time:** ${shift.time}\n✅ **Status:** Active`,
+        value: `🕐 ${discordTimestamp(shift.unix)}\n✅ **Status:** Active`,
         inline: false
       });
     });
@@ -161,10 +176,7 @@ async function postNewBoard(channel) {
 async function updateShiftBoard() {
   try {
     const channel = await client.channels.fetch(SHIFTS_CHANNEL_ID);
-    if (!channel) {
-      console.error(`❌ Could not find channel ID: ${SHIFTS_CHANNEL_ID}`);
-      return;
-    }
+    if (!channel) return;
 
     if (shiftBoardMessageId) {
       try {
@@ -178,7 +190,7 @@ async function updateShiftBoard() {
       }
     }
 
-    await postNewBoard(channel);
+    await postNewBoard(await client.channels.fetch(SHIFTS_CHANNEL_ID));
   } catch (err) {
     console.error('❌ Error updating shift board:', err);
   }
@@ -192,7 +204,6 @@ client.on('interactionCreate', async interaction => {
   console.log(`📥 /shift ${sub} by ${interaction.user.username}`);
 
   try {
-    // Role check
     if (['create', 'end', 'cancel'].includes(sub)) {
       if (!hasAllowedRole(interaction.member)) {
         return await interaction.reply({
@@ -212,22 +223,21 @@ client.on('interactionCreate', async interaction => {
       const time = interaction.options.getString('time');
       const role = interaction.options.getString('role');
 
-      const shift = { id: nextId++, date, time, role };
+      const unix  = toUnixTimestamp(date, time);
+      const shift = { id: nextId++, date, time, role, unix };
       shifts.push(shift);
       saveData();
       await updateShiftBoard();
 
-      // ✅ Ping fix — using allowedMentions to make sure it pings
       const pingText = PING_ROLE_ID ? `<@&${PING_ROLE_ID}>` : '';
 
       const confirmEmbed = new EmbedBuilder()
         .setTitle(`✅ Shift #${shift.id} Created!`)
         .setColor(0x57F287)
         .addFields(
-          { name: '🔢 Shift ID', value: `#${shift.id}`, inline: true },
-          { name: '🎭 Role',     value: role,            inline: true },
-          { name: '📅 Date',     value: date,            inline: true },
-          { name: '⏰ Time',     value: time,            inline: true }
+          { name: '🔢 Shift ID', value: `#${shift.id}`,                inline: true },
+          { name: '🎭 Role',     value: role,                           inline: true },
+          { name: '🕐 When',     value: discordTimestamp(unix),         inline: false }
         )
         .setFooter({ text: `Created by ${interaction.user.username}` });
 
@@ -254,7 +264,7 @@ client.on('interactionCreate', async interaction => {
           new EmbedBuilder()
             .setTitle(`🏁 Shift #${shift.id} Ended`)
             .setColor(0xFEE75C)
-            .setDescription(`Shift **#${shift.id}** (*${shift.role}*) on ${shift.date} at ${shift.time} has ended.`)
+            .setDescription(`Shift **#${shift.id}** (*${shift.role}*) scheduled for <t:${shift.unix}:F> has ended.`)
             .setFooter({ text: `Ended by ${interaction.user.username}` })
         ]
       });
@@ -276,7 +286,7 @@ client.on('interactionCreate', async interaction => {
           new EmbedBuilder()
             .setTitle(`❌ Shift #${shift.id} Cancelled`)
             .setColor(0xED4245)
-            .setDescription(`Shift **#${shift.id}** (*${shift.role}*) on ${shift.date} at ${shift.time} has been cancelled.`)
+            .setDescription(`Shift **#${shift.id}** (*${shift.role}*) scheduled for <t:${shift.unix}:F> has been cancelled.`)
             .setFooter({ text: `Cancelled by ${interaction.user.username}` })
         ]
       });
