@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require(‘discord.js’);
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const http = require(‘http’);
 const fs = require(‘fs’);
 
