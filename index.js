@@ -10,12 +10,12 @@ GatewayIntentBits.GuildMessages,
 ]
 });
 
-const TOKEN = ‘MTQ5NzMyMTM3MzAzMzQzNTIxNg.GYhu8k.xuwcVZmPZGJ1E6iuRjLSd6tBS2dnTAgHmOlq_8’;
-const CLIENT_ID = ‘1497321373033435216’;
-const SHIFTS_CHANNEL_ID = ‘1490327515791626261’;
-const ALLOWED_ROLE_ID = ‘1494694598688247979’;
-const PING_ROLE_ID = ‘1490264151342317659’;
-const TIMEZONE_OFFSET = 2;
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const SHIFTS_CHANNEL_ID = process.env.SHIFTS_CHANNEL_ID;
+const ALLOWED_ROLE_ID = process.env.ALLOWED_ROLE_ID;
+const PING_ROLE_ID = process.env.PING_ROLE_ID;
+const TIMEZONE_OFFSET = parseInt(process.env.TIMEZONE_OFFSET || ‘2’);
 
 http.createServer(function(req, res) { res.end(‘ok’); }).listen(process.env.PORT || 3000);
 
